@@ -1,6 +1,6 @@
 // Constants
 const API_ENDPOINTS = {
-    UNIVERSITIES: 'http://universities.hipolabs.com/search',
+    UNIVERSITIES: 'https://universities.hipolabs.com/search',
     COUNTRY_INFO: 'https://restcountries.com/v3.1/name',
     GEMINI: 'https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent'
 };
@@ -42,6 +42,14 @@ window.addEventListener('click', (e) => {
     if (e.target === elements.modal) closeModal();
 });
 
+// Validate API response helper
+function validateApiResponse(response, apiName) {
+    if (!response.ok) {
+        throw new Error(`${apiName} API error: ${response.status}`);
+    }
+    return response;
+}
+
 // Main search handler for country search
 async function handleSearch() {
     const country = elements.countryInput.value.trim();
@@ -57,16 +65,21 @@ async function handleSearch() {
     try {
         // Validate country name
         const countryInfo = await fetchCountryInfo(country);
-        if (!countryInfo) throw new Error('Country not found');
+        if (!countryInfo) {
+            throw new Error('Country not found. Please check the spelling and try again.');
+        }
 
         // Fetch universities
         const universities = await fetchUniversities(country);
-        if (universities.length === 0) throw new Error('No universities found for this country');
+        if (universities.length === 0) {
+            throw new Error('No universities found for this country in our database.');
+        }
 
         // Process and display results
         await displayResults(universities, countryInfo);
     } catch (error) {
-        showError(error.message);
+        console.error('Search error:', error);
+        showError(error.message || 'An unexpected error occurred. Please try again.');
     } finally {
         showLoading(false);
     }
@@ -88,7 +101,8 @@ async function handleUniSearch() {
         const details = await fetchUniversityDetails(universityName);
         displayUniversityDetails(details);
     } catch (error) {
-        showUniSearchError(error.message);
+        console.error('University search error:', error);
+        showUniSearchError(error.message || 'Failed to fetch university details');
     } finally {
         showUniSearchLoading(false);
     }
@@ -98,8 +112,13 @@ async function handleUniSearch() {
 async function fetchCountryInfo(country) {
     try {
         const response = await fetch(`${API_ENDPOINTS.COUNTRY_INFO}/${encodeURIComponent(country)}`);
-        if (!response.ok) return null;
+        validateApiResponse(response, 'Country Info');
+        
         const data = await response.json();
+        if (!Array.isArray(data) || data.length === 0) {
+            throw new Error('Country not found');
+        }
+        
         return data[0];
     } catch (error) {
         console.error('Error fetching country info:', error);
@@ -108,76 +127,108 @@ async function fetchCountryInfo(country) {
 }
 
 async function fetchUniversities(country) {
-    const response = await fetch(`${API_ENDPOINTS.UNIVERSITIES}?country=${encodeURIComponent(country)}`);
-    if (!response.ok) throw new Error('Failed to fetch universities');
-    return await response.json();
+    try {
+        const response = await fetch(`${API_ENDPOINTS.UNIVERSITIES}?country=${encodeURIComponent(country)}`, {
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
+        
+        validateApiResponse(response, 'Universities');
+        
+        const data = await response.json();
+        
+        if (!Array.isArray(data)) {
+            throw new Error('Invalid response format from universities API');
+        }
+        
+        return data;
+    } catch (error) {
+        console.error('Error fetching universities:', error);
+        throw new Error('Failed to fetch universities. Please check your internet connection and try again.');
+    }
 }
 
 async function fetchUniversityDetails(universityName) {
-    const prompt = `Provide the information for ${universityName}:
-    Format the response in clear sections with bullet points. and ignore the information that is not available`;
-
-    const response = await fetch(`${API_ENDPOINTS.GEMINI}?key=${GEMINI_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{
-                parts: [{ text: prompt }]
-            }]
-        })
-    });
-
-    if (!response.ok) throw new Error('Failed to fetch university details');
-    
-    const data = await response.json();
-    if (!data.candidates || !data.candidates[0]?.content?.parts[0]?.text) {
-        throw new Error('No information available for this university');
-    }
-    
-    return data.candidates[0].content.parts[0].text;
-}
-
-// Display Functions
-function displayResults(universities, countryInfo) {
-    elements.results.classList.remove('hidden');
-
-    // Sort universities by name
-    universities.sort((a, b) => a.name.localeCompare(b.name));
-
-    // Get top universities using Gemini API
-    fetchTopUniversities(countryInfo.name.common, universities.slice(0, 10))
-        .then(topUnis => {
-            elements.topUnisList.innerHTML = topUnis.map(uni => createUniversityCard(uni, true)).join('');
-        })
-        .catch(error => {
-            console.error('Error fetching top universities:', error);
-            // Fallback to showing first 5 universities
-            const topUnis = universities.slice(0, 5);
-            elements.topUnisList.innerHTML = topUnis.map(uni => createUniversityCard(uni, true)).join('');
-        });
-
-    // Display all universities
-    elements.uniList.innerHTML = universities.map(uni => createUniversityCard(uni)).join('');
-
-    // Add click events to university cards
-    document.querySelectorAll('.uni-card').forEach(card => {
-        card.addEventListener('click', () => showUniversityDetails(card.dataset.uni));
-    });
-}
-
-async function fetchTopUniversities(country, universities) {
-    const prompt = `From this list of universities in ${country}, identify the top 5 based on academic reputation and rankings:\n${universities.map(u => u.name).join('\n')}`;
-
     try {
+        const prompt = `Provide the information for ${universityName}:
+        Format the response in clear sections with bullet points. and ignore the information that is not available`;
+
         const response = await fetch(`${API_ENDPOINTS.GEMINI}?key=${GEMINI_API_KEY}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
             body: JSON.stringify({
                 contents: [{
                     parts: [{ text: prompt }]
                 }]
             })
         });
+
+        validateApiResponse(response, 'University Details');
+        
+        const data = await response.json();
+        if (!data.candidates || !data.candidates[0]?.content?.parts[0]?.text) {
+            throw new Error('No information available for this university');
+        }
+        
+        return data.candidates[0].content.parts[0].text;
+    } catch (error) {
+        console.error('Error fetching university details:', error);
+        throw new Error('Failed to fetch university details. Please try again later.');
+    }
+}
+
+// Display Functions
+async function displayResults(universities, countryInfo) {
+    elements.results.classList.remove('hidden');
+
+    // Sort universities by name
+    universities.sort((a, b) => a.name.localeCompare(b.name));
+
+    try {
+        // Get top universities using Gemini API
+        const topUnis = await fetchTopUniversities(countryInfo.name.common, universities.slice(0, 10));
+        elements.topUnisList.innerHTML = topUnis.map(uni => createUniversityCard(uni, true)).join('');
+    } catch (error) {
+        console.error('Error fetching top universities:', error);
+        // Fallback to showing first 5 universities
+        const topUnis = universities.slice(0, 5);
+        elements.topUnisList.innerHTML = topUnis.map(uni => createUniversityCard(uni, true)).join('');
+    }
+
+    // Display all universities
+    elements.uniList.innerHTML = universities.map(uni => createUniversityCard(uni)).join('');
+
+    // Add click events to university cards
+    document.querySelectorAll('.uni-card').forEach(card => {
+        card.addEventListener('click', () => {
+            const uniData = JSON.parse(card.dataset.uni);
+            showUniversityModal(uniData);
+        });
+    });
+}
+
+async function fetchTopUniversities(country, universities) {
+    try {
+        const prompt = `From this list of universities in ${country}, identify the top 5 based on academic reputation and rankings:\n${universities.map(u => u.name).join('\n')}`;
+
+        const response = await fetch(`${API_ENDPOINTS.GEMINI}?key=${GEMINI_API_KEY}`, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [{ text: prompt }]
+                }]
+            })
+        });
+
+        validateApiResponse(response, 'Top Universities');
 
         const data = await response.json();
         const topUnisList = data.candidates[0].content.parts[0].text
@@ -189,6 +240,7 @@ async function fetchTopUniversities(country, universities) {
             topUnisList.some(topUni => uni.name.toLowerCase().includes(topUni.toLowerCase()))
         );
     } catch (error) {
+        console.error('Error fetching top universities:', error);
         throw new Error('Failed to identify top universities');
     }
 }
